@@ -11,10 +11,8 @@ import (
 	"time"
 )
 
-// TODO GET NOT WORKING
-
-const Max_reasonable_temperature = 80
-const Max_reasonable_humidity = 100
+const MaxReasonableTemperature = 80
+const MaxReasonableHumidity = 100
 
 func connectDB() *sql.DB {
 	dsn := os.Getenv("POSTGRES_DSN")
@@ -31,237 +29,342 @@ func connectDB() *sql.DB {
 	return db
 }
 
-type Response_type struct {
-	Status  string      `json:"status"`  // ok:error
-	Code    int         `json:"code"`    // http response code
-	Message string      `json:"message"` //	 human-readable message
-	Data    interface{} `json:"data"`    // DATA if relavent
-	Error   string      `json:"error"`   // error message
+type ResponseType struct {
+	Status  string      `json:"status"`
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data"`
+	Error   string      `json:"error"`
 }
-type Temperature_Intake_type struct {
+
+type TemperatureIntakeType struct {
 	Temperature float32   `json:"temperature"`
 	Timestamp   time.Time `json:"timestamp"`
 	DeviceId    string    `json:"deviceId"`
 }
 
-type Humidity_Intake_type struct {
+type HumidityIntakeType struct {
 	Humidity  float32   `json:"humidity"`
 	Timestamp time.Time `json:"timestamp"`
 	DeviceId  string    `json:"deviceId"`
 }
 
+type TemperatureHumidityIntakeType struct {
+	Temperature float32   `json:"temperature"`
+	Humidity    float32   `json:"humidity"`
+	Timestamp   time.Time `json:"timestamp"`
+	DeviceId    string    `json:"deviceId"`
+}
+
 func main() {
 	log.Println("starting server")
 	db := connectDB()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	HandleRequests(db)
 }
-func Greetings(w http.ResponseWriter, v *http.Request) {
-	Response := Response_type{
+
+func Greetings(w http.ResponseWriter, _ *http.Request) {
+	writeJSONResponse(w, ResponseType{
 		Status:  "ok",
-		Code:    200,
+		Code:    http.StatusOK,
 		Message: "hello world",
-		Data:    nil,
-		Error:   "",
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	jsonResponse, err := json.Marshal(Response)
-	if err != nil {
-		log.Println(err)
-	}
-	w.Write(jsonResponse)
+	})
 }
 
-func Temperature_Intake(w http.ResponseWriter, v *http.Request, db *sql.DB) {
-	Response := Response_type{}
-	if v.Method != http.MethodPost {
-		Response = Response_type{
-			Status:  "error",
-			Code:    400,
-			Message: "invalid method",
-			Data:    nil,
-			Error:   "",
-		}
-	} else {
-		var intake Temperature_Intake_type
-		if err := json.NewDecoder(v.Body).Decode(&intake); err != nil {
-			Response = Response_type{
-				Status:  "error",
-				Code:    400,
-				Message: "invalid request body",
-				Data:    nil,
-				Error:   err.Error(),
-			}
-		} else {
-			log.Println("Received temperature intake: ", intake)
-
-			if intake.Temperature > Max_reasonable_temperature {
-				Response = Response_type{
-					Status:  "error",
-					Code:    400,
-					Message: "Temperature over " + strconv.Itoa(Max_reasonable_temperature) + " assuming error",
-					Data:    nil,
-					Error:   "temperature too high to believe",
-				}
-			} else {
-				intake.Timestamp = time.Now().UTC()
-				log.Println("trying to write to db")
-				if err := insertTemperature(context.Background(), db, intake); err != nil {
-					Response = Response_type{
-						Status:  "error",
-						Code:    http.StatusInternalServerError,
-						Message: "failed to store temperature intake",
-						Error:   err.Error(),
-					}
-				} else {
-					Response = Response_type{
-						Status:  "ok",
-						Code:    http.StatusCreated,
-						Message: "temperature intake stored",
-						Data:    intake,
-						Error:   "",
-					}
-				}
-			}
-
-		}
-	}
+func writeJSONResponse(w http.ResponseWriter, response ResponseType) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(Response.Code)
-	jsonResponse, err := json.Marshal(Response)
+	w.WriteHeader(response.Code)
+	jsonResponse, err := json.Marshal(response)
 	if err != nil {
 		log.Println(err)
+		return
 	}
 	_, _ = w.Write(jsonResponse)
 }
 
-func Humidity_Intake(w http.ResponseWriter, v *http.Request, db *sql.DB) {
-	Response := Response_type{}
-	if v.Method != http.MethodPost {
-		Response = Response_type{
+func decodeJSONBody(v *http.Request, target interface{}) error {
+	decoder := json.NewDecoder(v.Body)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(target)
+}
+
+func processTemperatureIntake(ctx context.Context, db *sql.DB, intake TemperatureIntakeType) ResponseType {
+	if intake.Temperature > MaxReasonableTemperature {
+		return ResponseType{
 			Status:  "error",
-			Code:    400,
+			Code:    http.StatusBadRequest,
+			Message: "Temperature over " + strconv.Itoa(MaxReasonableTemperature) + " assuming error",
+			Error:   "temperature too high to believe",
+		}
+	}
+
+	if err := insertTemperature(ctx, db, intake); err != nil {
+		return ResponseType{
+			Status:  "error",
+			Code:    http.StatusInternalServerError,
+			Message: "failed to store temperature intake",
+			Error:   err.Error(),
+		}
+	}
+
+	return ResponseType{
+		Status:  "ok",
+		Code:    http.StatusCreated,
+		Message: "temperature intake stored",
+		Data:    intake,
+	}
+}
+
+func processHumidityIntake(ctx context.Context, db *sql.DB, intake HumidityIntakeType) ResponseType {
+	if intake.Humidity > MaxReasonableHumidity {
+		return ResponseType{
+			Status:  "error",
+			Code:    http.StatusBadRequest,
+			Message: "Humidity over " + strconv.Itoa(MaxReasonableHumidity) + " assuming error",
+			Error:   "humidity too high to believe",
+		}
+	}
+
+	if err := insertHumidity(ctx, db, intake); err != nil {
+		return ResponseType{
+			Status:  "error",
+			Code:    http.StatusInternalServerError,
+			Message: "failed to store humidity intake",
+			Error:   err.Error(),
+		}
+	}
+
+	return ResponseType{
+		Status:  "ok",
+		Code:    http.StatusCreated,
+		Message: "humidity intake stored",
+		Data:    intake,
+	}
+}
+
+func TemperatureIntake(w http.ResponseWriter, v *http.Request, db *sql.DB) {
+	if v.Method != http.MethodPost {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusMethodNotAllowed,
 			Message: "invalid method",
-			Data:    nil,
-			Error:   "",
-		}
-	} else {
-		var intake Humidity_Intake_type
-		if err := json.NewDecoder(v.Body).Decode(&intake); err != nil {
-			Response = Response_type{
-				Status:  "error",
-				Code:    400,
-				Message: "invalid request body",
-				Data:    nil,
-				Error:   err.Error(),
-			}
-		} else {
-			intake.Timestamp = time.Now().UTC()
-			log.Println("Received humidity intake: ", intake)
-
-			if intake.Humidity > Max_reasonable_humidity {
-				Response = Response_type{
-					Status:  "error",
-					Code:    400,
-					Message: "Humidity over " + strconv.Itoa(Max_reasonable_temperature) + " assuming error",
-					Data:    nil,
-					Error:   "temperature too high to believe",
-				}
-			} else {
-				log.Println("trying to write to db")
-				if err := insertHumidity(context.Background(), db, intake); err != nil {
-					Response = Response_type{
-						Status:  "error",
-						Code:    http.StatusInternalServerError,
-						Message: "failed to store temperature intake",
-						Error:   err.Error(),
-					}
-				} else {
-					Response = Response_type{
-						Status:  "ok",
-						Code:    http.StatusCreated,
-						Message: "temperature intake stored",
-						Data:    intake,
-						Error:   "",
-					}
-				}
-			}
-
-		}
+			Error:   "use POST",
+		})
+		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(Response.Code)
-	jsonResponse, err := json.Marshal(Response)
-	if err != nil {
-		log.Println(err)
+
+	var intake TemperatureIntakeType
+	if err := decodeJSONBody(v, &intake); err != nil {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusBadRequest,
+			Message: "invalid request body",
+			Error:   err.Error(),
+		})
+		return
 	}
-	_, _ = w.Write(jsonResponse)
+
+	intake.Timestamp = time.Now().UTC()
+	log.Println("Received temperature intake:", intake)
+	writeJSONResponse(w, processTemperatureIntake(context.Background(), db, intake))
+}
+
+func HumidityIntake(w http.ResponseWriter, v *http.Request, db *sql.DB) {
+	if v.Method != http.MethodPost {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusMethodNotAllowed,
+			Message: "invalid method",
+			Error:   "use POST",
+		})
+		return
+	}
+
+	var intake HumidityIntakeType
+	if err := decodeJSONBody(v, &intake); err != nil {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusBadRequest,
+			Message: "invalid request body",
+			Error:   err.Error(),
+		})
+		return
+	}
+
+	intake.Timestamp = time.Now().UTC()
+	log.Println("Received humidity intake:", intake)
+	writeJSONResponse(w, processHumidityIntake(context.Background(), db, intake))
+}
+
+func TemperatureHumidityIntake(w http.ResponseWriter, v *http.Request, db *sql.DB) {
+	if v.Method != http.MethodPost {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusMethodNotAllowed,
+			Message: "invalid method",
+			Error:   "use POST",
+		})
+		return
+	}
+
+	var intake TemperatureHumidityIntakeType
+	if err := decodeJSONBody(v, &intake); err != nil {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusBadRequest,
+			Message: "invalid request body",
+			Error:   err.Error(),
+		})
+		return
+	}
+
+	timestamp := time.Now().UTC()
+	temperatureIntake := TemperatureIntakeType{
+		Temperature: intake.Temperature,
+		Timestamp:   timestamp,
+		DeviceId:    intake.DeviceId,
+	}
+	humidityIntake := HumidityIntakeType{
+		Humidity:  intake.Humidity,
+		Timestamp: timestamp,
+		DeviceId:  intake.DeviceId,
+	}
+
+	temperatureResponse := processTemperatureIntake(context.Background(), db, temperatureIntake)
+	if temperatureResponse.Status == "error" {
+		writeJSONResponse(w, temperatureResponse)
+		return
+	}
+
+	humidityResponse := processHumidityIntake(context.Background(), db, humidityIntake)
+	if humidityResponse.Status == "error" {
+		writeJSONResponse(w, humidityResponse)
+		return
+	}
+
+	intake.Timestamp = timestamp
+	writeJSONResponse(w, ResponseType{
+		Status:  "ok",
+		Code:    http.StatusCreated,
+		Message: "temperature and humidity intake stored",
+		Data:    intake,
+	})
 }
 
 func GetTemperature(w http.ResponseWriter, v *http.Request, db *sql.DB) {
-	Response := Response_type{}
 	if v.Method != http.MethodGet {
-		Response = Response_type{
+		writeJSONResponse(w, ResponseType{
 			Status:  "error",
 			Code:    http.StatusMethodNotAllowed,
 			Message: "invalid method",
 			Error:   "use GET",
-		}
-	} else {
-		intervalParam := v.URL.Query().Get("interval")
-		if intervalParam == "" {
-			intervalParam = "5m"
-		}
-
-		interval, err := time.ParseDuration(intervalParam)
-		if err != nil || interval <= 0 {
-			Response = Response_type{
-				Status:  "error",
-				Code:    http.StatusBadRequest,
-				Message: "invalid interval",
-				Error:   "interval must be a valid duration like 1m, 5m, 1h",
-			}
-		} else {
-			readings, err := pullTemperatureByInterval(context.Background(), db, interval)
-			if err != nil {
-				Response = Response_type{
-					Status:  "error",
-					Code:    http.StatusInternalServerError,
-					Message: "failed to fetch temperature readings",
-					Error:   err.Error(),
-				}
-			} else {
-				Response = Response_type{
-					Status:  "ok",
-					Code:    http.StatusOK,
-					Message: "temperature readings fetched",
-					Data:    readings,
-				}
-			}
-		}
+		})
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(Response.Code)
-	jsonResponse, err := json.Marshal(Response)
+	intervalParam := v.URL.Query().Get("interval")
+	if intervalParam == "" {
+		intervalParam = "5m"
+	}
+
+	interval, err := time.ParseDuration(intervalParam)
+	if err != nil || interval <= 0 {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusBadRequest,
+			Message: "invalid interval",
+			Error:   "interval must be a valid duration like 1m, 5m, 1h",
+		})
+		return
+	}
+
+	readings, err := pullTemperatureByInterval(context.Background(), db, interval)
 	if err != nil {
-		log.Println(err)
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusInternalServerError,
+			Message: "failed to fetch temperature readings",
+			Error:   err.Error(),
+		})
+		return
 	}
-	_, _ = w.Write(jsonResponse)
+
+	writeJSONResponse(w, ResponseType{
+		Status:  "ok",
+		Code:    http.StatusOK,
+		Message: "temperature readings fetched",
+		Data:    readings,
+	})
+}
+
+func GetHumidity(w http.ResponseWriter, v *http.Request, db *sql.DB) {
+	if v.Method != http.MethodGet {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusMethodNotAllowed,
+			Message: "invalid method",
+			Error:   "use GET",
+		})
+		return
+	}
+
+	intervalParam := v.URL.Query().Get("interval")
+	if intervalParam == "" {
+		intervalParam = "5m"
+	}
+
+	interval, err := time.ParseDuration(intervalParam)
+	if err != nil || interval <= 0 {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusBadRequest,
+			Message: "invalid interval",
+			Error:   "interval must be a valid duration like 1m, 5m, 1h",
+		})
+		return
+	}
+
+	readings, err := pullHumidityByInterval(context.Background(), db, interval)
+	if err != nil {
+		writeJSONResponse(w, ResponseType{
+			Status:  "error",
+			Code:    http.StatusInternalServerError,
+			Message: "failed to fetch humidity readings",
+			Error:   err.Error(),
+		})
+		return
+	}
+
+	writeJSONResponse(w, ResponseType{
+		Status:  "ok",
+		Code:    http.StatusOK,
+		Message: "humidity readings fetched",
+		Data:    readings,
+	})
 }
 
 func HandleRequests(db *sql.DB) {
 	http.HandleFunc("/greet", Greetings)
+
+	// Keep separate paths for backward compatibility.
 	http.HandleFunc("/api/post/temperature", func(w http.ResponseWriter, r *http.Request) {
-		Temperature_Intake(w, r, db)
+		TemperatureIntake(w, r, db)
 	})
 	http.HandleFunc("/api/post/humidity", func(w http.ResponseWriter, r *http.Request) {
-		Humidity_Intake(w, r, db)
+		HumidityIntake(w, r, db)
+	})
+
+	// Combined path for devices sending both values in one payload.
+	http.HandleFunc("/api/post/temperaturehumidity", func(w http.ResponseWriter, r *http.Request) {
+		TemperatureHumidityIntake(w, r, db)
 	})
 
 	http.HandleFunc("/api/get/temperature", func(w http.ResponseWriter, r *http.Request) {
 		GetTemperature(w, r, db)
 	})
+	http.HandleFunc("/api/get/humidity", func(w http.ResponseWriter, r *http.Request) {
+		GetHumidity(w, r, db)
+	})
+
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

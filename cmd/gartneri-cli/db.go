@@ -11,7 +11,7 @@ import (
 	_ "github.com/lib/pq" // To register the driver.
 )
 
-func insertTemperature(ctx context.Context, db *sql.DB, intake Temperature_Intake_type) error {
+func insertTemperature(ctx context.Context, db *sql.DB, intake TemperatureIntakeType) error {
 	if db == nil {
 		return errors.New("database is nil")
 	}
@@ -29,7 +29,7 @@ func insertTemperature(ctx context.Context, db *sql.DB, intake Temperature_Intak
 	return nil
 }
 
-func insertHumidity(ctx context.Context, db *sql.DB, intake Humidity_Intake_type) error {
+func insertHumidity(ctx context.Context, db *sql.DB, intake HumidityIntakeType) error {
 	if db == nil {
 		return errors.New("database is nil")
 	}
@@ -47,7 +47,7 @@ func insertHumidity(ctx context.Context, db *sql.DB, intake Humidity_Intake_type
 	return nil
 }
 
-func pullTemperatureByInterval(ctx context.Context, db *sql.DB, interval time.Duration) ([]Temperature_Intake_type, error) {
+func pullTemperatureByInterval(ctx context.Context, db *sql.DB, interval time.Duration) ([]TemperatureIntakeType, error) {
 	if db == nil {
 		return nil, errors.New("database is nil")
 	}
@@ -70,11 +70,50 @@ func pullTemperatureByInterval(ctx context.Context, db *sql.DB, interval time.Du
 	}
 	defer rows.Close()
 
-	readings := make([]Temperature_Intake_type, 0)
+	readings := make([]TemperatureIntakeType, 0)
 	for rows.Next() {
-		var intake Temperature_Intake_type
+		var intake TemperatureIntakeType
 		if err := rows.Scan(&intake.Temperature, &intake.Timestamp, &intake.DeviceId); err != nil {
 			return nil, fmt.Errorf("scan temperature row: %w", err)
+		}
+		readings = append(readings, intake)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate temperature rows: %w", err)
+	}
+
+	return readings, nil
+}
+
+func pullHumidityByInterval(ctx context.Context, db *sql.DB, interval time.Duration) ([]TemperatureIntakeType, error) {
+	if db == nil {
+		return nil, errors.New("database is nil")
+	}
+
+	if interval <= 0 {
+		return nil, errors.New("interval must be greater than zero")
+	}
+
+	cutoff := time.Now().UTC().Add(-interval)
+	const query = `
+		SELECT humidity, timestamp, device_id
+		FROM humidity_readings
+		WHERE timestamp >= $1
+		ORDER BY timestamp ASC
+	`
+
+	rows, err := db.QueryContext(ctx, query, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("pull humidity by interval: %w", err)
+	}
+	defer rows.Close()
+
+	readings := make([]TemperatureIntakeType, 0)
+	for rows.Next() {
+		var intake TemperatureIntakeType
+		if err := rows.Scan(&intake.Temperature, &intake.Timestamp, &intake.DeviceId); err != nil {
+			return nil, fmt.Errorf("scan humidity row: %w", err)
 		}
 		readings = append(readings, intake)
 	}
