@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -88,6 +90,28 @@ func decodeJSONBody(v *http.Request, target interface{}) error {
 	return decoder.Decode(target)
 }
 
+func parseInterval(intervalParam string) (time.Duration, error) {
+	intervalParam = strings.TrimSpace(intervalParam)
+	if intervalParam == "" {
+		return 5 * time.Minute, nil
+	}
+
+	if intervalParam == "0" || intervalParam == "0s" || intervalParam == "0m" || intervalParam == "0h" || intervalParam == "0d" {
+		return 0, nil
+	}
+
+	if strings.HasSuffix(intervalParam, "d") {
+		daysPart := strings.TrimSuffix(intervalParam, "d")
+		days, err := strconv.Atoi(daysPart)
+		if err != nil || days < 0 {
+			return 0, fmt.Errorf("invalid day interval")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+
+	return time.ParseDuration(intervalParam)
+}
+
 func processTemperatureIntake(ctx context.Context, db *sql.DB, intake TemperatureIntakeType) ResponseType {
 	if intake.Temperature > MaxReasonableTemperature {
 		return ResponseType{
@@ -116,6 +140,7 @@ func processTemperatureIntake(ctx context.Context, db *sql.DB, intake Temperatur
 }
 
 func processHumidityIntake(ctx context.Context, db *sql.DB, intake HumidityIntakeType) ResponseType {
+	log.Println("processing humidty + temp intake")
 	if intake.Humidity > MaxReasonableHumidity {
 		return ResponseType{
 			Status:  "error",
@@ -206,7 +231,7 @@ func TemperatureHumidityIntake(w http.ResponseWriter, v *http.Request, db *sql.D
 		})
 		return
 	}
-
+	log.Println("Received temperature and humidity intake request")
 	var intake TemperatureHumidityIntakeType
 	if err := decodeJSONBody(v, &intake); err != nil {
 		writeJSONResponse(w, ResponseType{
@@ -267,13 +292,13 @@ func GetTemperature(w http.ResponseWriter, v *http.Request, db *sql.DB) {
 		intervalParam = "5m"
 	}
 
-	interval, err := time.ParseDuration(intervalParam)
-	if err != nil || interval <= 0 {
+	interval, err := parseInterval(intervalParam)
+	if err != nil || interval < 0 {
 		writeJSONResponse(w, ResponseType{
 			Status:  "error",
 			Code:    http.StatusBadRequest,
 			Message: "invalid interval",
-			Error:   "interval must be a valid duration like 1m, 5m, 1h",
+			Error:   "interval must be a valid duration like 0, 1m, 5m, 1h, 1d; 0 means all-time",
 		})
 		return
 	}
@@ -313,13 +338,13 @@ func GetHumidity(w http.ResponseWriter, v *http.Request, db *sql.DB) {
 		intervalParam = "5m"
 	}
 
-	interval, err := time.ParseDuration(intervalParam)
-	if err != nil || interval <= 0 {
+	interval, err := parseInterval(intervalParam)
+	if err != nil || interval < 0 {
 		writeJSONResponse(w, ResponseType{
 			Status:  "error",
 			Code:    http.StatusBadRequest,
 			Message: "invalid interval",
-			Error:   "interval must be a valid duration like 1m, 5m, 1h",
+			Error:   "interval must be a valid duration like 0, 1m, 5m, 1h, 1d; 0 means all-time",
 		})
 		return
 	}
